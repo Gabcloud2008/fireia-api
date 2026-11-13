@@ -1,6 +1,9 @@
 """Batería de pruebas de producción del servicio de IA FIREIA (Misión 015-K, Fase 5).
 
-Ejecuta contra --url (staging local o la URL pública de Render):
+Ejecuta contra --url (staging local o la URL pública de Render). Con --modelo
+se indica qué modelo sirve la instancia (random_forest por defecto;
+gradient_boosting = plan B documentado para instancias de 512 MB): cada variante
+compara contra sus propias referencias locales y su SHA-256 del manifiesto.
   1.  GET /health                    → estado y modelo cargado
   2.  GET /                          → info y versión
   3.  GET /model/info                → tarea, variables, limitaciones, SHA-256
@@ -33,15 +36,38 @@ SHA_RF = "2361c743bd51c72bc4b09c13bbcc2a83e3e70bc905bdb6f68efa69881e93c1c2"
 SHA_GBM = "630cc704ed15ab1c7c2932e5b6fb2221361cd2e6a543c5402a9ed35cd4749b76"
 SHA_METRICAS = "ce2e5c940123650c524dbe85463f8e6f595579ea0528445db07b70e78a514c6c"
 
-# Inferencias de referencia calculadas LOCALMENTE con modelo_random_forest.joblib
-# (sha 2361c743...) sobre dataset_riesgo_celda_mes.parquet (sha 37c4c012...);
-# reproducibles con scripts/verificar_modelo_local.py. Tolerancia 1e-6.
-REFERENCIAS = [
+# Inferencias de referencia calculadas LOCALMENTE con los modelos canónicos
+# sobre dataset_riesgo_celda_mes.parquet (sha 37c4c012...); reproducibles con
+# scripts/verificar_modelo_local.py. Tolerancia 1e-6.
+REFERENCIAS_RF = [
     {"lat": -24.05, "lon": -54.25, "mes": "2025-06", "p": 0.357805},
     {"lat": -25.35, "lon": -57.55, "mes": "2024-08", "p": 0.619886},
     {"lat": -22.45, "lon": -61.85, "mes": "2025-09", "p": 0.360970},
     {"lat": -23.15, "lon": -58.15, "mes": "2026-04", "p": 0.308019},
 ]
+REFERENCIAS_GBM = [  # verificadas con scripts/referencias_gbm_local.py (14-nov-2026)
+    {"lat": -24.05, "lon": -54.25, "mes": "2025-06", "p": 0.302547},
+    {"lat": -25.35, "lon": -57.55, "mes": "2024-08", "p": 0.696040},
+    {"lat": -22.45, "lon": -61.85, "mes": "2025-09", "p": 0.465426},
+    {"lat": -23.15, "lon": -58.15, "mes": "2026-04", "p": 0.267406},
+]
+
+# activas según --modelo (ver configurar())
+REFERENCIAS = REFERENCIAS_RF
+SHA_ACTIVO = SHA_RF
+MODELO_ACTIVO = "random_forest"
+
+
+def configurar(modelo: str) -> None:
+    """Fija el conjunto de referencias y SHA esperado según el modelo servido."""
+    global REFERENCIAS, SHA_ACTIVO, MODELO_ACTIVO
+    MODELO_ACTIVO = modelo
+    if modelo == "gradient_boosting":
+        REFERENCIAS = REFERENCIAS_GBM
+        SHA_ACTIVO = SHA_GBM
+    else:
+        REFERENCIAS = REFERENCIAS_RF
+        SHA_ACTIVO = SHA_RF
 
 INVALIDAS = [
     {"cuerpo": {"lat": 10.0, "lon": 10.0, "mes": "2025-06"}, "esperado": "fuera_de_grilla", "rotulo": "coordenada fuera de Paraguay"},
@@ -174,8 +200,9 @@ class Pruebas:
     def probar_modelo_identidad(self):
         st, d, _ = self._peticion("POST", "/predict", {"lat": -24.05, "lon": -54.25, "mes": "2025-06"})
         sha = d.get("modelo", {}).get("sha256")
-        ok = st == 200 and sha == SHA_RF
-        return self.registrar("8. identidad del modelo: SHA-256 == manifiesto canónico", ok, f"sha={str(sha)[:16]}...")
+        nombre = d.get("modelo", {}).get("nombre")
+        ok = st == 200 and sha == SHA_ACTIVO and nombre == MODELO_ACTIVO
+        return self.registrar(f"8. identidad del modelo: SHA-256 == manifiesto canónico ({MODELO_ACTIVO})", ok, f"sha={str(sha)[:16]}...")
 
     def probar_tiempos(self):
         _st, _, ms = self._peticion("POST", "/predict", {"lat": -24.05, "lon": -54.25, "mes": "2025-06"})
@@ -205,15 +232,19 @@ class Pruebas:
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--url", required=True, help="URL base del servicio (p. ej. https://fireia-api.onrender.com)")
+    ap.add_argument("--modelo", choices=["random_forest", "gradient_boosting"], default="random_forest",
+                    help="modelo servido por la instancia (define referencias y SHA esperado)")
     ap.add_argument("--salida", default=None, help="ruta del archivo JSON de evidencia")
     args = ap.parse_args()
 
+    configurar(args.modelo)
     p = Pruebas(args.url)
     ok = p.ejecutar()
     if args.salida:
         evidencia = {
             "url": args.url,
             "fecha_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "modelo_probado": args.modelo,
             "total": len(p.resultados),
             "ok": sum(1 for r in p.resultados if r["ok"]),
             "pruebas": p.resultados,

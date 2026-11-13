@@ -188,11 +188,15 @@ def cargar_modelos() -> None:
         ESTADO["sklearn"] = sklearn.__version__
         del df, partes
 
-        # 4) modelos
-        for nombre in ("random_forest", "gradient_boosting"):
-            ESTADO["modelos"][nombre] = joblib.load(DATA_DIR / f"modelo_{nombre}.joblib")
-        if MODELO_PRINCIPAL not in ESTADO["modelos"]:
+        # 4) modelo principal declarado en FIREIA_MODELO. En instancias free
+        #    (512 MB) cargar además el RF (193 MB) produce OOM (constatado en
+        #    producción el 14-nov-2026: la instancia reiniciaba en loop); se
+        #    carga únicamente el principal (plan B documentado: gradient_boosting).
+        if MODELO_PRINCIPAL not in ("random_forest", "gradient_boosting"):
             raise ValueError(f"FIREIA_MODELO invalido: {MODELO_PRINCIPAL}")
+        ESTADO["modelos"][MODELO_PRINCIPAL] = joblib.load(
+            DATA_DIR / f"modelo_{MODELO_PRINCIPAL}.joblib"
+        )
 
         ESTADO["listo"] = True
         logger.info(f'{{"evento":"modelo_listo","principal":"{MODELO_PRINCIPAL}","segundos":{time.time() - t0:.1f}}}')
@@ -411,6 +415,22 @@ def predict(entrada: EntradaPredict):
             422,
         )
 
+    if entrada.modelo not in ESTADO["modelos"]:
+        return _error(
+            "modelo_no_cargado",
+            f"El modelo '{entrada.modelo}' no está cargado en esta instancia "
+            f"(modelo principal: {MODELO_PRINCIPAL}). Es una limitación de recursos "
+            "declarada, no un fallo: el plan free de Render tiene 512 MB y el RF de "
+            "193 MB excede la memoria al cargarse junto con el resto. En instancias "
+            "con más RAM se sirve random_forest (mejor por validación). El servicio "
+            "no simula inferencias de modelos que no tiene cargados.",
+            {
+                "modelo_solicitado": entrada.modelo,
+                "modelos_cargados": sorted(ESTADO["modelos"]),
+                "modelo_principal": MODELO_PRINCIPAL,
+            },
+            422,
+        )
     modelo = ESTADO["modelos"][entrada.modelo]
     prob = float(modelo.predict_proba(fila.reshape(1, -1))[:, 1][0])
     binaria = int(prob >= entrada.umbral)

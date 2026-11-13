@@ -158,7 +158,27 @@ def test_entrada_invalida_rechazada(cliente):
         assert r.status_code == 422, cuerpo
 
 
-def test_modelo_alternativo_funciona(cliente):
-    r = cliente.post("/predict", json={"lat": -24.05, "lon": -54.25, "mes": "2025-02", "modelo": "gradient_boosting"})
-    assert r.status_code == 200
-    assert r.json()["modelo"]["nombre"] == "gradient_boosting"
+def test_modelo_no_cargado_se_declara_sin_simular(cliente):
+    """Solo se sirve el modelo principal cargado (limitación de RAM declarada).
+
+    En instancias free de Render (512 MB) cargar además el RF de 193 MB
+    produce OOM; el servicio carga únicamente FIREIA_MODELO y, si se pide
+    otro, responde 422 explicativo en lugar de simular la inferencia.
+    """
+    alt = "gradient_boosting" if servicio.MODELO_PRINCIPAL == "random_forest" else "random_forest"
+    r = cliente.post("/predict", json={"lat": -24.05, "lon": -54.25, "mes": "2025-02", "modelo": alt})
+    if alt == servicio.MODELO_PRINCIPAL:  # pragma: no cover (fixture: principal fijo)
+        assert r.status_code == 200
+        assert r.json()["modelo"]["nombre"] == alt
+        return
+    assert r.status_code == 422
+    d = r.json()
+    assert d["error"]["codigo"] == "modelo_no_cargado"
+    assert "no está cargado" in d["error"]["mensaje"]
+    assert alt not in d["error"]["detalle"]["modelos_cargados"]
+
+    # el principal sí responde
+    r2 = cliente.post("/predict", json={"lat": -24.05, "lon": -54.25, "mes": "2025-02",
+                                        "modelo": servicio.MODELO_PRINCIPAL})
+    assert r2.status_code == 200
+    assert r2.json()["modelo"]["nombre"] == servicio.MODELO_PRINCIPAL
