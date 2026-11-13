@@ -1,0 +1,10 @@
+# Artefactos locales (se descargan en el build desde Hugging Face; nunca en Git)
+datos_ia/
+*.joblib
+*.parquet
+
+# Entornos y secretos
+.env
+__pycache__/
+*.pyc
+.pytest_cache/

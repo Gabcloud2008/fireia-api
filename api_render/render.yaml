@@ -1,0 +1,26 @@
+# FIREIA — Blueprint de Render para el servicio de IA
+# Despliegue reproducible: en Render Dashboard → New → Blueprint, o vía API
+# con scripts/crear_servicio_render.py (mismos parámetros).
+#
+# El modelo (193 MB) NO vive en el repositorio (límite de GitHub de 100 MB y
+# fuente canónica en Hugging Face): se descarga y verifica por SHA-256 en el
+# build. Sin secretos en el código ni en este archivo.
+services:
+  - type: web
+    name: fireia-api
+    runtime: python
+    plan: free
+    region: oregon
+    branch: main
+    buildCommand: cd api_render && pip install -r requirements.txt && python descargar_modelo.py --data-dir datos_ia
+    startCommand: cd api_render && uvicorn app:app --host 0.0.0.0 --port $PORT --workers 1
+    healthCheckPath: /health
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.12.5"
+      - key: FIREIA_DATA_DIR
+        value: datos_ia
+      - key: FIREIA_MODELO
+        value: random_forest
+      - key: FIREIA_HF_REPO
+        value: p400-full/modis-viirs-hotspots-paraguay
